@@ -9,83 +9,130 @@ public class GlobalGameManger : NetworkBehaviour
 {
     public static GlobalGameManger Instance;
     [SerializeField] private GameObject playerPrefab;
-    public Dictionary<ulong,NetworkObject> playerDic = new Dictionary<ulong, NetworkObject>();
+
+    // 本地字典：在各端本地维护，通过 RPC 同步数据
+    public Dictionary<ulong, PlayerController> playerDic = new Dictionary<ulong, PlayerController>();
 
     private void Awake()
     {
         Instance = this;
         DontDestroyOnLoad(this.gameObject);
     }
-    public void AddPlayer(ulong id,NetworkObject player) 
+    public override void OnNetworkSpawn()
     {
-        playerDic.Add(id, player);
+        // 只有服务器需要关心"人满不开车"的逻辑
+        if (IsServer)
+        {
+            NetworkManager.Singleton.OnClientConnectedCallback += OnClientConnected;
+            NetworkManager.Singleton.OnClientDisconnectCallback += OnClientDisconnected;
+        }
     }
-    
-    private void Start()
+    public override void OnNetworkDespawn()
     {
-        NetworkManager.Singleton.OnClientConnectedCallback += (id) => 
+        if (IsServer)
         {
-            Debug.Log("A New Player Connected , id = " + id);
-            if (!IsServer)
-                return;
-            if (NetworkManager.Singleton.ConnectedClients.Count == 2)
+            if (NetworkManager.Singleton != null)
             {
-                Debug.Log("StartGame");
-                StartGame();
+                NetworkManager.Singleton.OnClientConnectedCallback -= OnClientConnected;
+                NetworkManager.Singleton.OnClientDisconnectCallback -= OnClientDisconnected;
             }
-        };
-        NetworkManager.Singleton.OnClientDisconnectCallback += (id) => { Debug.Log("A New Player Disconnected , id = " + id); };
-        NetworkManager.Singleton.OnServerStarted += () => 
-        {
-            Debug.Log("Server Started");
-        };
+        }
     }
 
-    private void StartGame()
+    // 单独抽离回调方法，逻辑更清晰
+    private void OnClientConnected(ulong clientId)
     {
+        Debug.Log($"玩家加入: {clientId}. 当前人数: {NetworkManager.Singleton.ConnectedClients.Count}");
+
+        // 检查人数是否达到2人 (Host自己算1个，Client算1个)
+        if (NetworkManager.Singleton.ConnectedClients.Count == 2)
+        {
+            Debug.Log("人数已满 (2/2)，触发游戏加载状态...");
+            StartGameLogic();
+        }
+    }
+
+    private void OnClientDisconnected(ulong clientId)
+    {
+        Debug.Log($"玩家断开: {clientId}");
+    }
+
+    private void StartGameLogic()
+    {
+        // 这一步会修改网络变量，从而触发所有端的 GameStateController
         GameStateController.instance.ChangeState(GameState.GameLoading);
     }
 
-    public void SpawnPlayer() 
+    public void SpawnPlayer()
     {
-        if (!IsServer)
-            return;
-        var allClients = NetworkManager.Singleton.ConnectedClientsList;
-        var sortedClients = new List<NetworkClient>(allClients);
-        sortedClients.Sort((a, b) => a.ClientId.CompareTo(b.ClientId));
+        if (!IsServer) return;
 
-        for (int i = 0; i < sortedClients.Count; i++)
+        var allClients = NetworkManager.Singleton.ConnectedClientsList;
+        for (int i = 0; i < allClients.Count; i++)
         {
-            var client = sortedClients[i];
+            var client = allClients[i];
             Vector3 spawnPosition = new Vector3(i * 2.0f, 1.0f, 0.0f);
-            Quaternion spawnRotation = Quaternion.identity;
-            var playerObject = Instantiate(playerPrefab, spawnPosition, spawnRotation);
+
+            var playerObject = Instantiate(playerPrefab, spawnPosition, Quaternion.identity);
             var networkObject = playerObject.GetComponent<NetworkObject>();
+
             networkObject.SpawnAsPlayerObject(client.ClientId);
-            AddPlayer(client.ClientId, networkObject);
-            Debug.Log("Generate for ID ;" + client.ClientId);
+
+            AddPlayerToDicClientRpc(client.ClientId, networkObject.NetworkObjectId);
         }
     }
-    public void OnStartClientB() 
+
+    [ClientRpc]
+    private void AddPlayerToDicClientRpc(ulong clientId, ulong networkObjectId)
     {
-        if (NetworkManager.Singleton.StartClient())
-            Debug.Log("Client Suc");
-        else
-            Debug.Log("Client Fail");
+        StartCoroutine(WaitAndAddPlayer(clientId, networkObjectId));
     }
 
-    public void OnStartHostB() 
+    private IEnumerator WaitAndAddPlayer(ulong clientId, ulong networkObjectId)
     {
-        if (NetworkManager.Singleton.StartHost())
-            Debug.Log("Host Suc");
-        else
-            Debug.Log("Host Fail");
-        
+        float timer = 0;
+        while (!NetworkManager.Singleton.SpawnManager.SpawnedObjects.ContainsKey(networkObjectId) && timer < 2.0f)
+        {
+            timer += Time.deltaTime;
+            yield return null;
+        }
+
+        if (NetworkManager.Singleton.SpawnManager.SpawnedObjects.TryGetValue(networkObjectId, out var netObj))
+        {
+            var controller = netObj.GetComponent<PlayerController>();
+            if (!playerDic.ContainsKey(clientId))
+            {
+                playerDic.Add(clientId, controller);
+                Debug.Log($"[Dic] 成功添加玩家 ID: {clientId}, 角色: {netObj.name}");
+            }
+        }
     }
 
-    public void OnShutdownNetworkB() 
+    public PlayerController GetPlayerById(ulong id)
     {
-        NetworkManager.Singleton.Shutdown();
+        return playerDic.TryGetValue(id, out var p) ? p : null;
+    }
+
+    public PlayerController GetOtherPlayer()
+    {
+        foreach (var pair in playerDic)
+        {
+            if (pair.Key != NetworkManager.Singleton.LocalClientId)
+                return pair.Value;
+        }
+        return null;
+    }
+
+    public NetworkVariable<bool> isMapEnvironmentChanged = new NetworkVariable<bool>(false);
+
+    public bool TryChangeMapEnvironment()
+    {
+        if (isMapEnvironmentChanged.Value)
+        {
+            return false; 
+        }
+
+        isMapEnvironmentChanged.Value = true;
+        return true;
     }
 }
-

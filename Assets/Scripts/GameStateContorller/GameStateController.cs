@@ -16,7 +16,7 @@ public class GameStateController : NetworkBehaviour
 {
     public static GameStateController instance;
 
-    public NetworkVariable<GameState> currentNetState = new NetworkVariable<GameState>(GameState.GameLoading);
+    public NetworkVariable<GameState> currentNetState = new NetworkVariable<GameState>(GameState.None);
 
     private void Awake()
     {
@@ -69,7 +69,7 @@ public class GameStateController : NetworkBehaviour
 
     private void HandleWaitingState()
     {
-        NetworkManager.Singleton.LocalClient.PlayerObject.GetComponent<PlayerController>().DisableGravityClientRpc();
+        HandleWaitingStateClientRpc();
         StartCoroutine(WaitAndStartGame());
     }
     private IEnumerator WaitAndStartGame() 
@@ -80,12 +80,12 @@ public class GameStateController : NetworkBehaviour
     private void HandlePlayState() 
     {
         NetworkManager.Singleton.LocalClient.PlayerObject.GetComponent<PlayerController>().UseCharacterGravityClientRpc();
-
     }
     [ClientRpc]
-    private void MapStartGenerateClientRpc() 
+    private void HandleWaitingStateClientRpc() 
     {
-        //StartCoroutine(MapGenerator.instance.PreGenerateMap());
+        NetworkManager.Singleton.LocalClient.PlayerObject.GetComponent<PlayerController>().DisableGravityClientRpc();
+        SkillSlotUI.Instance.InitializeSlots();
     }
 
     public void ChangeState(GameState state) 

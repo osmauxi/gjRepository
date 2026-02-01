@@ -22,6 +22,6 @@ public class MoveState : State
     {
         base.Update();
         if (!player.isGrounded && !player.isDashing )
-            stateMachine.ChangeState(player.fallState);
+            stateMachine.ChangeState(player.jumpState);
     }
 }

@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
+using UnityEngine.UI;
 
 
 //组件的容器，持有策略模式接口和具体实现，E 但不是严格的Entity
@@ -23,7 +24,7 @@ public class PlayerController : NetworkBehaviour
     #region 网络同步变量
     //服务器权威状态
     private readonly NetworkVariable<PlayerNetworkState> _netState = new NetworkVariable<PlayerNetworkState>(
-        writePerm: NetworkVariableWritePermission.Server
+        writePerm: NetworkVariableWritePermission.Owner 
     );
     //我们希望外部只需要读取_netState的值，不能对其进行自由修改，所以给一个public变量直接返回他的值，封装性这一块
     public PlayerNetworkState NetStateValue => _netState.Value;
@@ -34,24 +35,41 @@ public class PlayerController : NetworkBehaviour
     [Header("组件引用")]
     public Animator anim;
     public LayerMask mouseAimLayer;
+    private CharacterController _cc;
+    public PlayerStatController statController;
 
+    [Header("变身状态")]
+    public bool isTransformingMode = false; // 是否正在选位置准备变身
+    private Masks _pendingMask = Masks.None; // 准备变哪个？
+    private bool _isTransforming = false;
+    private float _skillCooldownTimer = 0f;
+
+    //输入缓存
+    private bool _jumpInputBuffer;
+    private bool _attackInputBuffer;
+    private bool _skillInputBuffer;
     #region 状态机相关属性和方法
     public bool isGrounded => LocalState.IsGrounded;
-    public bool isDashing => LocalState.IsDashing;
+    public bool isDashing => LocalState.IsAttacking;
     public Vector3 velocity => LocalState.Velocity;
 
     public StateMachine stateMachine = new StateMachine();
     public IdleState idleState { get; private set; }
     public MoveState moveState { get; private set; }
-    public DashState dashState { get; private set; }
-    public FallState fallState { get; private set; }
+    public SkillState skillState { get; private set; }
+    public JumpState jumpState { get; private set; }
     public AttackState attackState { get; private set; }
     public DeadState deadState { get; private set; }
     #endregion
-
+    private void HandleTransformClick()
+    {
+        PerformTransformation(_pendingMask);
+    }
     private void Awake()
     {
-        _physicsQuery = new PhysicsQuery(); // 注入物理实现
+        _cc = GetComponent<CharacterController>();
+        statController = GetComponent<PlayerStatController>();
+        _physicsQuery = new CharacterPhysicsDriver(_cc); //注入物理实现
         LogicCore = new CoreMovementLogic(config, _physicsQuery);
     }
     //同步状态切换方法
@@ -75,12 +93,12 @@ public class PlayerController : NetworkBehaviour
         #region 状态机初始化
         idleState = new IdleState(stateMachine, "Idle", this);
         moveState = new MoveState(stateMachine, "Move", this);
-        dashState = new DashState(stateMachine, "Dash", this);
-        fallState = new FallState(stateMachine, "Fall", this);
+        skillState = new SkillState(stateMachine, "Skill", this);
+        jumpState = new JumpState(stateMachine, "Jump", this);
         attackState = new AttackState(stateMachine, "Attack", this);
         deadState = new DeadState(stateMachine, "Death", this);
 
-        anim = GetComponent<Animator>();
+        anim = GetComponentInChildren<Animator>();  
         stateMachine.Initialize(idleState);
         #endregion
         // 初始化状态
@@ -90,9 +108,14 @@ public class PlayerController : NetworkBehaviour
             Rotation = transform.rotation,
             Velocity = Vector3.zero,
             IsGrounded = true,
-            IsDashing = false,
-            DashCooldownTimer = 0,
-            DashDurationTimer = 0
+            IsAttacking = false,
+            IsJumping = false,
+            IsUsingSkill = false,
+            currentState = PlayerStateType.Idle,
+            AttackCooldownTimer = 0,
+            JumpTimer = 0,
+            JumpCooldownTimer = 0,
+            SkillDurationTimer = 0,
         };
 
         ServerState = LocalState;
@@ -101,9 +124,12 @@ public class PlayerController : NetworkBehaviour
         _lastSentInput = new PlayerInputPayload();
         ServerInput = new PlayerInputPayload();
 
-        if (IsServer)
-            _netState.Value = ServerState;
-        if(IsClient&&IsOwner)
+        if (IsOwner)
+        {
+            _netState.Value = LocalState;
+        }
+
+        if (IsClient&&IsOwner)
             CameraViewManager.instance.CameraInitialize();
         SwitchDriver(_currentDriver);
 
@@ -116,6 +142,8 @@ public class PlayerController : NetworkBehaviour
     }
     private void FixedUpdate()
     {
+        if (!IsSpawned) 
+            return;
         //将同步工作完全交给驱动器来做
         _currentDriver.OnFixedUpdate(Time.deltaTime);
 
@@ -123,29 +151,199 @@ public class PlayerController : NetworkBehaviour
     }
     private void Update()
     {
+        if(!IsSpawned) 
+            return;
+
+        if (IsServer)
+        {
+            Vector3 horizontalVelocity = new Vector3(ServerState.Velocity.x, 0, ServerState.Velocity.z);
+
+            bool isMoving = horizontalVelocity.sqrMagnitude > 0.1f;
+
+            if (statController != null)
+            {
+                statController.ProcessDearEnergyLogic(isMoving);
+            }
+        }
+        if (_skillCooldownTimer > 0)
+        {
+            _skillCooldownTimer -= Time.deltaTime;
+        }
+        if (!IsOwner)
+            return;
+        if (Input.GetKeyDown(GlobalInputManager.Instance.JumpKey)) _jumpInputBuffer = true;
+        if (Input.GetKeyDown(GlobalInputManager.Instance.AttackKey)) _attackInputBuffer = true;
+
+        if (Input.GetKeyDown(GlobalInputManager.Instance.SkillKey))
+        {
+            TryUseSkill();
+        }
+
         _currentDriver.OnUpdate(Time.deltaTime);
     }
+    #region 技能
+    public void PrepareTransformation(Masks maskType)
+    {
+        if (statController.CanTransform(maskType))
+        {
+            isTransformingMode = true;
+            _pendingMask = maskType;
+            Debug.Log($"请点击鼠标选择变身位置: {maskType}");
+        }
+        else
+        {
+            Debug.Log("能量不足，无法变身！");
+        }
+    }
 
+    private void PerformTransformation(Masks maskType)
+    {
+        // 3. 应用数值修正 (速度等)
+        ApplyTransformationStats(maskType);
+
+        // 4. 切换地图 (本地切换，如果需要同步给别人看，需要发 RPC)
+        MapManager.Instance.SwitchMap(maskType);
+        // 如果需要全员变地图：
+        // MapSwitchServerRpc(maskType); 
+
+        // 5. 强制同步状态
+        ForceUpdateNetState(LocalState);
+
+        Debug.Log($"变身成功: {maskType}");
+    }
+
+    private void ApplyTransformationStats(Masks maskType)
+    {
+        // 重置基础速度
+        float baseSpeed = 5.0f; // 假设这是初始值，最好存在 Config 里
+
+        switch (maskType)
+        {
+            case Masks.Panda:
+                config.maxMoveSpeed = baseSpeed * config.pandaSpeedMultiplier;
+                // 可以在这里换模型、换动画机
+                break;
+            case Masks.Dear:
+                config.maxMoveSpeed = baseSpeed * config.dearSpeedMultiplier;
+                break;
+            default:
+                config.maxMoveSpeed = baseSpeed;
+                break;
+        }
+    }
+
+    // 尝试释放技能
+    private void TryUseSkill()
+    {
+        if (LocalState.SkillDurationTimer > 0) 
+            return;
+        if (statController.Mask.Value == Masks.None) 
+            return;
+        if (_skillCooldownTimer > 0) 
+        { 
+            return;
+        }
+        _skillInputBuffer = true;
+        //先设置动画状态机参数
+        UpdateSkillAnimator(statController.Mask.Value);
+
+        //实例化技能逻辑 
+        ISkill skillToUse = null;
+        float currentCooldown = 0f;
+        switch (statController.Mask.Value)
+        {
+            case Masks.Panda:
+                var panda = new PandaSkill();
+                panda.Initialize(config);
+                skillToUse = panda;
+                currentCooldown = config.pandaSkillCooldown;
+                SkillSlotUI.Instance.StartCooldown(SkillSlotType.Skill, config.pandaSkillCooldown);
+                break;
+            case Masks.Dear:
+                var dear = new DearSkill();
+                dear.Initialize(config, currentInput, LocalState.Position);
+                skillToUse = dear;
+                currentCooldown = config.dearSkillCooldown;
+                SkillSlotUI.Instance.StartCooldown(SkillSlotType.Skill, config.dearSkillCooldown);
+                break;
+            case Masks.Monkey:
+                skillToUse = new MonkeySkill();
+                break;
+        }
+
+        if (skillToUse != null)
+        {
+            EquipSkill(skillToUse);
+            
+            _skillCooldownTimer = currentCooldown;
+        }
+    }
+    public void StartTransformSequence(Masks targetMask)
+    {
+        if (_isTransforming) 
+            return;
+
+        _isTransforming = true;
+        LocalState.Velocity = Vector3.zero;
+
+        statController.RequestTransform(targetMask);
+    }
+
+    //变身完成回调 
+    public void OnTransformComplete()
+    {
+        StartCoroutine(UnstuckRoutine());
+    }
+
+    //防卡死
+    private IEnumerator UnstuckRoutine()
+    {
+        // 等待一帧，确保地图碰撞体已经切换完毕
+        yield return new WaitForFixedUpdate();
+
+        CharacterController cc = GetComponent<CharacterController>();
+        int retryCount = 0;
+
+        // 当我们卡住时 (利用 CharacterController 的重叠检测或 Physics.CheckCapsule)
+        while (IsStuck(cc) && retryCount < 20)
+        {
+            // 每次往上挪 0.5 米
+            Vector3 newPos = transform.position + Vector3.up * 0.5f;
+
+            // 强制同步位置
+            LocalState.Position = newPos;
+            _physicsQuery.SyncTransform(newPos, transform.rotation);
+
+            retryCount++;
+            yield return new WaitForFixedUpdate();
+        }
+
+        // 解锁输入
+        _isTransforming = false;
+        Debug.Log("变身完成，控制权恢复");
+    }
+
+    private bool IsStuck(CharacterController cc)
+    {
+        Vector3 p1 = transform.position + cc.center + Vector3.up * -cc.height * 0.4f;
+        Vector3 p2 = transform.position + cc.center + Vector3.up * cc.height * 0.4f;
+        return Physics.CheckCapsule(p1, p2, cc.radius * 0.9f, config.groundLayer);
+    }
+    #endregion
     #region 共有方法
     private void OnServerStateChanged(PlayerNetworkState oldState, PlayerNetworkState newState)
     //在客户端收到服务器状态更新时调用，比较本地状态和服务器状态，进行必要的修正
     {
-        //始终保存服务器的权威状态
         ServerState = newState;
 
         if (IsOwner)
         {
-            float error = Vector3.Distance(LocalState.Position, newState.Position);
-            if (error > 0.5f) //容差阈值
-            {
-                Debug.LogWarning(error);
-                LocalState = newState; //强制覆盖
-            }
+            return;
         }
-        //非Owner不需要做任何事，HandleNonOwnerUpdate 会自动去读ServerState并插值过去
     }
     private void UpdateVisualStateMachine()
     {
+        if (stateMachine.CurrentState == deadState) return;
         //确定这个端怎么渲染状态
         PlayerStateType stateToRender;
         if (IsOwner)
@@ -163,20 +361,28 @@ public class PlayerController : NetworkBehaviour
                 if (stateMachine.CurrentState != moveState) 
                     stateMachine.ChangeState(moveState);
                 break;
-            case PlayerStateType.Dashing:
-                if (stateMachine.CurrentState != dashState) 
-                    stateMachine.ChangeState(dashState);
+            case PlayerStateType.Attacking:
+                if (stateMachine.CurrentState != attackState) 
+                    stateMachine.ChangeState(attackState);
                 break;
             case PlayerStateType.Falling:
-                if (stateMachine.CurrentState != fallState) 
-                    stateMachine.ChangeState(fallState);
+                if (stateMachine.CurrentState != jumpState) 
+                    stateMachine.ChangeState(jumpState);
+                break;
+            case PlayerStateType.Skill:
+                if (stateMachine.CurrentState != skillState)
+                    stateMachine.ChangeState(skillState);
+                break;
+                break;
+            case PlayerStateType.Dead:
+                stateMachine.ChangeState(deadState);
                 break;
         }
     }
     public void SmoothInterpolateTo(PlayerNetworkState targetState, float deltaTime) 
     {
-        transform.position = Vector3.Lerp(transform.position, targetState.Position, deltaTime * 10f);
-        transform.rotation = Quaternion.Slerp(transform.rotation, targetState.Rotation, deltaTime * 10f);
+        transform.position = Vector3.Lerp(transform.position, targetState.Position, 20f * deltaTime);
+        transform.rotation = Quaternion.Slerp(transform.rotation, targetState.Rotation, 20f * deltaTime);
     }
     public void UpdateLocalState(PlayerNetworkState newState) 
     {
@@ -185,43 +391,53 @@ public class PlayerController : NetworkBehaviour
 
     public PlayerInputPayload CollectInput()
     {
-        float lookAngleY = transform.eulerAngles.y; ;
-
-        Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
-
-        Plane groundPlane = new Plane(Vector3.up, transform.position);
-
-        float rayDistance;
-        Vector3 aimPoint = Vector3.zero;
-
-        if(groundPlane.Raycast(ray, out rayDistance))
+        if (_isTransforming || LocalState.IsDead)
         {
-            aimPoint = ray.GetPoint(rayDistance);
+            return new PlayerInputPayload
+            {
+                MoveDirection = Vector2.zero, //停止移动
+                LookAngleY = transform.eulerAngles.y
+            };
+        }
+        float lookAngleY = transform.eulerAngles.y;
+        Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+        Plane groundPlane = new Plane(Vector3.up, transform.position);
+        float rayDistance;
 
-            //计算方向向量
+        if (groundPlane.Raycast(ray, out rayDistance))
+        {
+            Vector3 aimPoint = ray.GetPoint(rayDistance);
             Vector3 targetDir = aimPoint - transform.position;
-            targetDir.y = 0f; //强制水平
+            targetDir.y = 0f;
 
-            if (targetDir.sqrMagnitude > 0.01f)
+            if (targetDir.sqrMagnitude > 0.001f)
             {
                 lookAngleY = Quaternion.LookRotation(targetDir).eulerAngles.y;
             }
         }
 
-        Vector3 cameraForward = Vector3.forward;
-        Vector3 cameraRight = Vector3.right;
+        Vector3 cameraForward = CameraViewManager.instance.GetCurrentViewForward();
+        Vector3 cameraRight = CameraViewManager.instance.GetCurrentViewRight();
 
-        cameraForward = CameraViewManager.instance.GetCurrentViewForward();
-        cameraRight = CameraViewManager.instance.GetCurrentViewRight();
+        //读取缓存值，读取后重置
+        bool jump = _jumpInputBuffer;
+        bool attack = _attackInputBuffer;
+        bool skill = _skillInputBuffer;
+
+        //重置缓存
+        _jumpInputBuffer = false;
+        _attackInputBuffer = false;
+        _skillInputBuffer = false;
 
         return new PlayerInputPayload
         {
             MoveDirection = new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical")),
             LookAngleY = lookAngleY,
-            DashPressed = Input.GetKeyDown(KeyCode.LeftShift),
-            Timestamp = Time.time,
+            AttackPressed = attack,
+            JumpPressed = jump,
+            SkillPressed = skill,
             CameraForward = cameraForward,
-            CameraRight = cameraRight
+            CameraRight = cameraRight,
         };
     }
     public void ApplyStateToView(PlayerNetworkState state)
@@ -245,7 +461,11 @@ public class PlayerController : NetworkBehaviour
         //排除微小误差
         if (Vector2.SqrMagnitude(a.MoveDirection - b.MoveDirection) > 0.001f) 
             return true;
-        if (a.DashPressed != b.DashPressed) 
+        if (a.AttackPressed != b.AttackPressed) 
+            return true;
+        if (a.JumpPressed != b.JumpPressed) 
+            return true;
+        if (a.SkillPressed != b.SkillPressed) 
             return true;
         if (Mathf.Abs(a.LookAngleY - b.LookAngleY) > 0.5f) 
             return true;
@@ -274,7 +494,7 @@ public class PlayerController : NetworkBehaviour
             return true;
         if (newState.IsGrounded != oldState.IsGrounded) 
             return true;
-        if (newState.IsDashing != oldState.IsDashing) 
+        if (newState.IsAttacking != oldState.IsAttacking) 
             return true;
         if (newState.currentState != oldState.currentState) 
             return true;
@@ -285,9 +505,8 @@ public class PlayerController : NetworkBehaviour
     #region 外部调用方法
     public void ForceUpdateNetState(PlayerNetworkState state)
     {
-        if (IsServer)
+        if (IsOwner)
         {
-            ServerState = state;
             _netState.Value = state;
         }
     }
@@ -301,11 +520,126 @@ public class PlayerController : NetworkBehaviour
     {
         config.gravity = -20;
     }
-    #endregion
-    private void OnDrawGizmosSelected()
+    public void SetDead() 
     {
-        Vector3 groundCheckWorldPos = transform.position + config.GroundCheckOffset;
-        Gizmos.color = Color.red;
-        Gizmos.DrawSphere(groundCheckWorldPos, config.groundCheckRadius);
+        if (LocalState.IsDead) return; // 防止重复调用
+
+        LocalState.IsDead = true;
+        LocalState.Velocity = Vector3.zero;
+        LocalState.currentState = PlayerStateType.Dead;
+
+        ForceUpdateNetState(LocalState);
+
+        stateMachine.ChangeState(deadState); 
     }
+    public void EquipSkill(ISkill skill) 
+    {
+        LogicCore.EquipSkill(skill);
+    }
+
+    public void RequestPickupItem(ulong networkObjectId)
+    {
+        // 如果是服务器（Host），直接处理
+        if (IsServer)
+        {
+            ProcessPickup(networkObjectId);
+        }
+        // 如果是客户端，发送 RPC 给服务器处理
+        else
+        {
+            RequestPickupServerRpc(networkObjectId);
+        }
+    }
+
+    [ServerRpc]
+    private void RequestPickupServerRpc(ulong networkObjectId)
+    {
+        ProcessPickup(networkObjectId);
+    }
+
+    private void ProcessPickup(ulong networkObjectId)
+    {
+        if (NetworkManager.Singleton.SpawnManager.SpawnedObjects.TryGetValue(networkObjectId, out var netObj))
+        {
+            if (netObj.TryGetComponent<EnergyBall>(out var ball))
+            {
+                ball.PickUp(this);
+            }
+            else
+            {
+                SyncObjectPool.instance.RetToPool(netObj);
+            }
+        }
+    }
+    #endregion
+    private void UpdateSkillAnimator(Masks currentMask)
+    {
+        // 0 = Monkey, 0.5 = Panda, 1 = Dear
+        float animValue = 0f;
+        switch (currentMask)
+        {
+            case Masks.Monkey:
+                animValue = 0f;
+                break;
+            case Masks.Panda:
+                animValue = 0.5f;
+                break;
+            case Masks.Dear:
+                animValue = 1.0f;
+                break;
+        }
+
+        // 设置 Animator 的混合树参数
+        anim.SetFloat("SkillEnum", animValue);
+    }
+    #region 击飞/受击逻辑
+
+    public void ApplyKnockback(Vector3 direction, float force, float stunDuration = 0.5f)
+    {
+        if (IsServer)
+        {
+            ApplyKnockbackClientRpc(direction, force, stunDuration);
+        }
+        else
+        {
+            ApplyKnockbackServerRpc(direction, force, stunDuration);
+        }
+    }
+
+    [ServerRpc(RequireOwnership = false)]
+    private void ApplyKnockbackServerRpc(Vector3 direction, float force, float stunDuration)
+    {
+        ApplyKnockbackClientRpc(direction, force, stunDuration);
+    }
+
+    [ClientRpc]
+    private void ApplyKnockbackClientRpc(Vector3 direction, float force, float stunDuration)
+    { 
+        if (!IsOwner) return;
+
+        StartCoroutine(KnockbackRoutine(direction, force, stunDuration));
+    }
+
+    private IEnumerator KnockbackRoutine(Vector3 direction, float force, float duration)
+    {
+
+        bool wasTransforming = _isTransforming;
+        _isTransforming = true; 
+
+        Vector3 finalDir = direction.normalized;
+        finalDir.y = 0.5f;
+
+        LocalState.Velocity = finalDir * force;
+
+        LocalState.IsGrounded = false;
+        LocalState.currentState = PlayerStateType.Falling;
+
+        ForceUpdateNetState(LocalState);
+
+        yield return new WaitForSeconds(duration);
+
+        _isTransforming = wasTransforming;
+    }
+
+    #endregion
 }

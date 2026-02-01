@@ -54,7 +54,7 @@ public class SyncObjectPool : NetworkBehaviour
                 //defaultCapacity:初始容量;
                 var newPool = new ObjectPool<NetworkObject>(
                     createFunc: () => Instantiate(netPrefab),
-                    actionOnGet: (obj) => obj.gameObject.SetActive(true),
+                    actionOnGet: (obj) =>  obj.gameObject.SetActive(true),
                     actionOnRelease: (obj) => obj.gameObject.SetActive(false),
                     actionOnDestroy: (obj) => Destroy(obj.gameObject),
                     defaultCapacity: item.iniAmount
@@ -92,7 +92,7 @@ public class SyncObjectPool : NetworkBehaviour
 
         //Despawn会自动触发Handler的Destroy自动放回池子
         if (obj.IsSpawned) 
-            obj.Despawn(false);
+            obj.Despawn(true);
     }
 }
 

@@ -3,6 +3,11 @@ using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
 
+public enum CameraState 
+{
+    Normal,
+    Special,
+}
 public class CameraViewManager : MonoBehaviour
 {
     public static CameraViewManager instance;
@@ -17,7 +22,6 @@ public class CameraViewManager : MonoBehaviour
     }
 
     [Header("相机配置")]
-    public Camera minimapCamera;
     public CinemachineVirtualCamera virtualCamera;
     public Transform player;
     public float viewDistance = 10f;  //相机到玩家的距离
@@ -37,10 +41,8 @@ public class CameraViewManager : MonoBehaviour
     public ViewDirection currentView { get; private set; } = ViewDirection.North;
     private Vector3 targetOffset;      //主相机目标位置偏移
     private Vector3 currentOffset;     //主相机当前位置偏移
-    private float targetMinimapAngle;  //小地图目标旋转角度
-    private float currentMinimapAngle; //小地图当前旋转角度
-    private float minimapSmoothVelocity;//小地图旋转平滑用的临时变量
     CinemachineTransposer transposer;
+    public CameraState CameraState = CameraState.Normal;
 
     //每个视角对应的主相机偏移
     private Dictionary<ViewDirection, Vector3> viewOffsets = new Dictionary<ViewDirection, Vector3>
@@ -50,16 +52,6 @@ public class CameraViewManager : MonoBehaviour
         { ViewDirection.South, new Vector3(0, 0, 1) }, 
         { ViewDirection.West,  new Vector3(1, 0, 0) }  
     };
-
-    //每个视角对应的小地图目标旋转角度（Z轴，与主相机视角同步）
-    private Dictionary<ViewDirection, float> minimapAngles = new Dictionary<ViewDirection, float>
-{
-    { ViewDirection.North, 0f },
-    { ViewDirection.East, 90f },
-    { ViewDirection.South, 180f },
-    { ViewDirection.West, 270f }
-};
-
     //当前摄像机的实际前方向和右方向（水平方向）
     private Vector3 _currentCameraForward;
     private Vector3 _currentCameraRight;
@@ -80,26 +72,41 @@ public class CameraViewManager : MonoBehaviour
     {
         player = NetworkManager.Singleton.LocalClient.PlayerObject.transform;
         virtualCamera.Follow = player;
-        minimapCamera = MinimapCamera.Instance.GetComponent<Camera>();
-
-        currentMinimapAngle = minimapCamera.transform.eulerAngles.z;
-        targetMinimapAngle = minimapAngles[currentView];
 
         currentOffset = CalculateOffset(currentView);
         targetOffset = currentOffset;
         UpdateCameraPosition();
         UpdateCameraDirections();
 
-        minimapCamera.GetComponent<MinimapCamera>().ChangeCameraPos(player.transform);
+    }
+    public void EndGameCameraSet(Transform newPlayer) 
+    {
+        CameraState = CameraState.Special;
+        player = newPlayer;
+        virtualCamera.LookAt = player;
+        virtualCamera.Follow = player;
+        virtualCamera.m_Lens.FieldOfView = 10;
+        var transposer = virtualCamera.GetCinemachineComponent<CinemachineTransposer>();
+        transposer.m_FollowOffset = new Vector3(0, 3, -10);
+    }
+
+    public void CameraResume() 
+    {
+        CameraState = CameraState.Normal;
+        virtualCamera.Follow = player;
+
+        currentOffset = CalculateOffset(currentView);
+        targetOffset = currentOffset;
+        UpdateCameraPosition();
+        UpdateCameraDirections();
     }
 
     private void Update()
     {
-        if (player != null)
+        if (player != null && CameraState == CameraState.Normal)
         {
             HandleRotationInput();
             SmoothCameraRotation();
-            SmoothMinimapRotation();
             UpdateCameraDirections(); //更新摄像机方向
         }
     }
@@ -111,13 +118,11 @@ public class CameraViewManager : MonoBehaviour
         {
             currentView = (ViewDirection)(((int)currentView + 1) % 4);//取余循环
             targetOffset = CalculateOffset(currentView);
-            targetMinimapAngle = minimapAngles[currentView]; //更新小地图目标角度
         }
         else if (Input.GetKeyDown(rotateLeftKey))
         {
             currentView = (ViewDirection)(((int)currentView - 1 + 4) % 4);
             targetOffset = CalculateOffset(currentView);
-            targetMinimapAngle = minimapAngles[currentView];
         }
     }
 
@@ -164,32 +169,6 @@ public class CameraViewManager : MonoBehaviour
 
         UpdateCameraPosition();
     }
-
-    //小地图平滑旋转（角度平滑）
-    private void SmoothMinimapRotation()
-    {
-        if (minimapCamera == null) return;
-
-        float actualEulerZ = minimapCamera.transform.eulerAngles.y;
-
-        if (Mathf.Abs(Mathf.DeltaAngle(actualEulerZ, targetMinimapAngle)) < snapAngleThreshold)
-        {
-            currentMinimapAngle = targetMinimapAngle;
-            minimapSmoothVelocity = 0f;
-        }
-        else
-        {
-            currentMinimapAngle = Mathf.SmoothDampAngle(
-                actualEulerZ,
-                targetMinimapAngle,
-                ref minimapSmoothVelocity,
-                rotateSmoothTime
-            );
-        }
-
-        minimapCamera.transform.eulerAngles = new Vector3(90f, currentMinimapAngle, 0f);
-    }
-
     private void UpdateCameraPosition()
     {   
         transposer.m_FollowOffset = currentOffset;

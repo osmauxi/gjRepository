@@ -8,9 +8,9 @@ public enum PlayerStateType
     Idle,
     Moving,
     Falling,
-    Dashing,
     Attacking,
-    dead
+    Skill,
+    Dead
 }
 public class StateMachine//PlayerStateMachine负责管理所有的状态的切换
 {
@@ -24,7 +24,7 @@ public class StateMachine//PlayerStateMachine负责管理所有的状态的切换
             _currentState = value;
             OnValueChanged?.Invoke();
         }
-    }//意为一个值在访问它的时候时public状态，想改变它时时private状态，即只读状态
+    }
 
     public void Initialize(State _startState)//Initialize为构造函数名
     {
