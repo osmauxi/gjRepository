@@ -38,7 +38,7 @@ public class PandaSkillRange : MonoBehaviour
 
                     targetController.ApplyKnockback(pushDirection, knockbackForce, stunTime);
 
-                    col.enabled = false;
+                    GetComponent<SphereCollider>().enabled = false;
                 }
             }
         }

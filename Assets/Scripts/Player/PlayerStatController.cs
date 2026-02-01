@@ -46,6 +46,24 @@ public class PlayerStatController : NetworkBehaviour
 
         Mask.OnValueChanged += OnMaskValueChanged;
         OnHealthChanged();
+
+        if (IsOwner)
+        {
+            // 1. 绑定事件监听
+            pandaEnergy.OnValueChanged += OnPandaEnergyChanged;
+            dearEnergy.OnValueChanged += OnDearEnergyChanged;
+            monkeyEnergy.OnValueChanged += OnMonkeyEnergyChanged;
+
+            // 2. 【关键】初始化 UI
+            // OnValueChanged 只有在值变的时候触发，刚进游戏是默认值，不会触发
+            // 所以我们需要手动调用一次 UI 更新，把初始值同步过去
+            if (PlayerStatUI.instance != null)
+            {
+                PlayerStatUI.instance.UpdatePandaEnergy(pandaEnergy.Value);
+                PlayerStatUI.instance.UpdateDearEnergy(dearEnergy.Value);
+                PlayerStatUI.instance.UpdateMonkeyEnergy(monkeyEnergy.Value);
+            }
+        }
     }
 
     public override void OnNetworkDespawn()
@@ -53,6 +71,35 @@ public class PlayerStatController : NetworkBehaviour
         _health.OnValueChanged -= HandleHealthChanged;
         _health.OnValueChanged -= CheckIsDead;
         Mask.OnValueChanged -= OnMaskValueChanged;
+        if (IsOwner)
+        {
+            pandaEnergy.OnValueChanged -= OnPandaEnergyChanged;
+            dearEnergy.OnValueChanged -= OnDearEnergyChanged;
+            monkeyEnergy.OnValueChanged -= OnMonkeyEnergyChanged;
+        }
+    }
+    private void OnPandaEnergyChanged(int prev, int current)
+    {
+        if (IsOwner && PlayerStatUI.instance != null)
+        {
+            PlayerStatUI.instance.UpdatePandaEnergy(current);
+        }
+    }
+
+    private void OnDearEnergyChanged(int prev, int current)
+    {
+        if (IsOwner && PlayerStatUI.instance != null)
+        {
+            PlayerStatUI.instance.UpdateDearEnergy(current);
+        }
+    }
+
+    private void OnMonkeyEnergyChanged(int prev, int current)
+    {
+        if (IsOwner && PlayerStatUI.instance != null)
+        {
+            PlayerStatUI.instance.UpdateMonkeyEnergy(current);
+        }
     }
     public void RequestTransform(Masks targetMask)
     {

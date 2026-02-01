@@ -70,8 +70,35 @@ public class CameraViewManager : MonoBehaviour
 
     public void CameraInitialize()
     {
-        player = NetworkManager.Singleton.LocalClient.PlayerObject.transform;
-        virtualCamera.Follow = player;
+        if (NetworkManager.Singleton.LocalClient?.PlayerObject != null)
+        {
+            player = NetworkManager.Singleton.LocalClient.PlayerObject.transform;
+            virtualCamera.Follow = player;
+        }
+        else
+        {
+            return;
+        }
+
+        var otherPlayerController = GlobalGameManger.Instance.GetOtherPlayer();
+
+        Vector3 targetPos = otherPlayerController != null ? otherPlayerController.transform.position : Vector3.zero;
+
+        // 计算从我指向目标的向量
+        Vector3 dirToTarget = (targetPos - player.position).normalized;
+
+        // 根据向量选择最接近的 ViewDirection (东/南/西/北)
+        // 比较 x 和 z 分量的绝对值，看是更偏向水平还是更偏向垂直
+        if (Mathf.Abs(dirToTarget.z) > Mathf.Abs(dirToTarget.x))
+        {
+            currentView = dirToTarget.z > 0 ? ViewDirection.North : ViewDirection.South;
+        }
+        else
+        {
+            currentView = dirToTarget.x > 0 ? ViewDirection.East : ViewDirection.West;
+        }
+
+        Debug.Log($"[Camera] 初始朝向已自动设置为: {currentView} (目标位置: {targetPos})");
 
         currentOffset = CalculateOffset(currentView);
         targetOffset = currentOffset;

@@ -71,9 +71,15 @@ public class GlobalGameManger : NetworkBehaviour
         for (int i = 0; i < allClients.Count; i++)
         {
             var client = allClients[i];
-            Vector3 spawnPosition = new Vector3(i * 2.0f, 1.0f, 0.0f);
 
-            var playerObject = Instantiate(playerPrefab, spawnPosition, Quaternion.identity);
+            Transform targetPoint = (i == 0) ? MapManager.Instance.SpawnPoint1 : MapManager.Instance.SpawnPoint2;
+
+            // 如果忘记设置 SpawnPoint，给一个默认值防止报错
+            Vector3 spawnPos = targetPoint != null ? targetPoint.position : new Vector3(i * 2.0f, 1.0f, 0.0f);
+            Quaternion spawnRot = targetPoint != null ? targetPoint.rotation : Quaternion.identity;
+
+            // 使用重生点的位置和旋转生成
+            var playerObject = Instantiate(playerPrefab, spawnPos, spawnRot);
             var networkObject = playerObject.GetComponent<NetworkObject>();
 
             networkObject.SpawnAsPlayerObject(client.ClientId);
@@ -81,7 +87,6 @@ public class GlobalGameManger : NetworkBehaviour
             AddPlayerToDicClientRpc(client.ClientId, networkObject.NetworkObjectId);
         }
     }
-
     [ClientRpc]
     private void AddPlayerToDicClientRpc(ulong clientId, ulong networkObjectId)
     {

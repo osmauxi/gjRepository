@@ -31,6 +31,10 @@ public class PlayerStatUI : MonoBehaviour
     public Sprite dearSkillSprite;
     public Sprite monkeySkillSprite;
 
+    [SerializeField] private Image PandaShadow;
+    [SerializeField] private Image DearShadow;
+    [SerializeField] private Image MonkeyShadow;
+
     private PlayerStatController playerStatController;
     private void Start()
     {
@@ -46,81 +50,80 @@ public class PlayerStatUI : MonoBehaviour
     {
         instance = this;
     }
-    private void Update()
+    public void UpdatePandaEnergy(int energy)
     {
-        UpdateEnergyUI();
+        float ratio = (float)energy / 100f;
+
+        PandaEnergySlider.value = ratio;
+        PandaShadow.gameObject.SetActive(energy >= 100);
+
+        SetInteractable(pandaMaskBtn, energy >= 100);
     }
-    private void UpdateEnergyUI()
+
+    public void UpdateDearEnergy(int energy)
     {
-        // 获取本地玩家
-        if (NetworkManager.Singleton.LocalClient == null || NetworkManager.Singleton.LocalClient.PlayerObject == null) return;
+        float ratio = (float)energy / 100f;
+        if (DearEnergySlider != null) DearEnergySlider.value = ratio;
+        if (DearShadow != null) DearShadow.gameObject.SetActive(energy >= 100);
 
-        // 缓存引用
-        if (playerStatController == null)
-            playerStatController = NetworkManager.Singleton.LocalClient.PlayerObject.GetComponent<PlayerController>().statController;
+        SetInteractable(dearMaskBtn, energy >= 100);
+    }
 
-        if (playerStatController == null) return;
+    public void UpdateMonkeyEnergy(int energy)
+    {
+        float ratio = (float)energy / 100f;
+        if (MonkeyEnergySlider != null) MonkeyEnergySlider.value = ratio;
+        if (MonkeyShadow != null) MonkeyShadow.gameObject.SetActive(energy >= 100);
 
-        // 如果已经变身，直接隐藏变身UI组
-        if (playerStatController.IsChangedMask)
-        {
-            if (EnergyPanel.activeSelf)
-                EnergyPanel.SetActive(false);
-            return;
-        }
-
-        MonkeyEnergySlider.value = (float)playerStatController.monkeyEnergy.Value / 100f;
-        PandaEnergySlider.value = (float)playerStatController.pandaEnergy.Value / 100f;
-        DearEnergySlider.value = (float)playerStatController.dearEnergy.Value / 100f;
-
-        // 按钮激活逻辑
-        SetInteractable(pandaMaskBtn, playerStatController.pandaEnergy.Value >= 100);
-        SetInteractable(dearMaskBtn, playerStatController.dearEnergy.Value >= 100);
-        SetInteractable(monkeyMaskBtn, playerStatController.monkeyEnergy.Value >= 100);
+        SetInteractable(monkeyMaskBtn, energy >= 100);
     }
     public void OnTransformSuccess(Masks newMask)
     {
-        // 1. 隐藏变身用的条和按钮
-        if (EnergyPanel != null) EnergyPanel.SetActive(false);
+        if (EnergyPanel != null) 
+            EnergyPanel.SetActive(false);
 
-        // 3. 更新技能图标
         UpdateSkillIcon(newMask);
     }
 
     private void UpdateSkillIcon(Masks mask)
     {
-        if (currentSkillIcon == null) return;
+        if (currentSkillIcon == null) 
+            return;
 
         currentSkillIcon.gameObject.SetActive(true);
         switch (mask)
         {
             case Masks.Panda:
                 currentSkillIcon.sprite = pandaSkillSprite;
+                PandaShadow.gameObject.SetActive(true);
                 break;
             case Masks.Dear:
                 currentSkillIcon.sprite = dearSkillSprite;
+                DearShadow.gameObject.SetActive(true);
                 break;
             case Masks.Monkey:
                 currentSkillIcon.sprite = monkeySkillSprite;
+                MonkeyShadow.gameObject.SetActive(true);
                 break;
         }
     }
     private void OnMaskClick(Masks mask)
     {
-        Debug.Log(2121212);
         //获取本地玩家控制器
+        MaskAnim.instance.TriggerAnim(mask);
         var localPlayer = GlobalGameManger.Instance.GetPlayerById(NetworkManager.Singleton.LocalClientId);
-
         localPlayer.GetComponent<PlayerController>().StartTransformSequence(mask);
 
         SetInteractable(pandaMaskBtn, false);
         SetInteractable(dearMaskBtn, false);
         SetInteractable(monkeyMaskBtn, false);
-        
     }
     private void SetInteractable(Button btn, bool active)
     {
-        if (btn != null) btn.interactable = active;
+        if (btn != null) 
+            btn.interactable = active;
+        if (active)
+            Debug.Log(1111);
     }
     public void UpdateOwnerHealth(float health, float maxHealth)
     {

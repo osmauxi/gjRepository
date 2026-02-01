@@ -10,6 +10,8 @@ public class MapManager : MonoBehaviour
     public GameObject dearMap;
     public GameObject monkeyMap;
 
+    public Transform SpawnPoint1;
+    public Transform SpawnPoint2;
     private void Awake()
     {
         Instance = this;
